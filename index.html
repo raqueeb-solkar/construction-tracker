@@ -664,6 +664,17 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  .hcard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .hcard-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--surface2); font-size: 13px; font-weight: 600; flex-wrap: wrap; }
+  .hchip { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 20px; }
+  .hchip.dup { background: rgba(239,68,68,.15); color: var(--red); }
+  .hchip.check { background: var(--amber-bg); color: var(--amber); }
+  .hchip.due { background: rgba(79,134,247,.15); color: var(--accent); }
+  .hchip.bad { background: rgba(239,68,68,.15); color: var(--red); }
+  .hitem { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; flex-wrap: wrap; }
+  .hitem .hmain { flex: 1; min-width: 180px; }
+  .hitem .hsub { font-size: 11px; color: var(--text3); }
+  .hfoot { display: flex; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); justify-content: flex-end; }
   @media (max-width: 768px) {
     .sidebar { width: 60px; }
     .sidebar .nav-item span, .sidebar .nav-label, .sidebar-logo .brand, .sidebar-logo .sub, .nav-item .badge { display: none; }
@@ -742,6 +753,11 @@
     <button class="nav-item" onclick="showPage('payments')" id="nav-payments">
       <i class="ti ti-cash" aria-hidden="true"></i>
       <span>Payments</span>
+    </button>
+    <button class="nav-item" onclick="showPage('health')" id="nav-health">
+      <i class="ti ti-heart-rate-monitor" aria-hidden="true"></i>
+      <span>Data Health</span>
+      <span class="badge" id="badge-health">0</span>
     </button>
     <button class="nav-item" onclick="openImportModal()" id="nav-import">
       <i class="ti ti-file-import" aria-hidden="true"></i>
@@ -832,6 +848,13 @@
         <tbody id="all-tbody"></tbody>
       </table>
     </div>
+  </div>
+
+  <!-- DATA HEALTH PAGE -->
+  <div class="page" id="page-health">
+    <div class="stats-grid" id="health-stats"></div>
+    <div class="filter-row" id="health-filter" style="padding:0 0 12px"></div>
+    <div id="health-list"></div>
   </div>
 
   <!-- PAYMENTS PAGE -->
@@ -1218,7 +1241,7 @@ function showPage(name) {
   const titles = {
     dashboard: 'Dashboard', all: 'All Expenses', raghu: 'Raghu Contractor',
     workers: 'Workers', material: 'Materials', masonry: 'Masonry Work',
-    electrical: 'Electrical Work', plumbing: 'Plumbing Work', brickwork: 'Brick Work', other: 'Other Work', payments: 'Payments'
+    electrical: 'Electrical Work', plumbing: 'Plumbing Work', brickwork: 'Brick Work', other: 'Other Work', payments: 'Payments', health: 'Data Health'
   };
   document.getElementById('topbar-title').innerHTML = titles[name] + ' <span>Harnai Construction Project</span>';
   renderPage(name);
@@ -1237,6 +1260,7 @@ function renderPage(name) {
     case 'brickwork': renderCategory('brickwork', 'Brick Work'); break;
     case 'other': renderCategory('other', 'Other'); break;
     case 'payments': renderPayments(); break;
+    case 'health': renderHealth(); break;
   }
   updateBadges();
 }
@@ -1245,6 +1269,8 @@ function updateBadges() {
   document.getElementById('badge-all').textContent = data.length;
   document.getElementById('badge-workers').textContent = data.filter(d => ['Masonry','Electrical','Plumbing','Brick Work','Other'].includes(d.category)).length;
   document.getElementById('badge-material').textContent = data.filter(d => d.category === 'Material').length;
+  const hb = document.getElementById('badge-health');
+  if (hb) hb.textContent = healthIssues().filter(i => !healthOk.has(i.key)).length;
 }
 
 // DASHBOARD
@@ -1806,6 +1832,111 @@ function driveSetStatus(msg, ok) {
   el.className = 'drive-status' + (ok ? ' connected' : '');
 }
 
+// ── DATA HEALTH ──
+const HEALTH_OK_KEY = 'alahmed_construction_health_ok_v1';
+let healthOk = new Set();
+try { healthOk = new Set(JSON.parse(localStorage.getItem(HEALTH_OK_KEY)) || []); } catch { healthOk = new Set(); }
+let healthFilter = 'all', healthShowReviewed = false;
+function saveHealthOk() { localStorage.setItem(HEALTH_OK_KEY, JSON.stringify([...healthOk])); }
+
+function healthIssues() {
+  const today = new Date().toISOString().split('T')[0];
+  const dd = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+  const nm = v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const mk = (kind, r) => ({ kind, id: r.id, date: r.date, desc: r.desc, worker: r.worker || '', amount: +r.amount, category: kind === 'payment' ? 'Payment' : r.category, status: r.status || 'Paid', remarks: r.remarks || '', row: r });
+  const items = [...data.map(r => mk('expense', r)), ...payments.map(r => mk('payment', r))];
+  const issues = [];
+  const add = (type, level, title, list) => {
+    const key = type + ':' + list.map(i => i.id).sort().join(',');
+    issues.push({ key, type, level, title, items: list.sort((a, b) => a.date.localeCompare(b.date)) });
+  };
+
+  // 1) possible duplicates: cluster items that look like the same entry
+  const reason = (a, b) => {
+    if (a.kind !== b.kind) return null;
+    if (a.date === b.date && a.amount === b.amount && nm(a.desc) === nm(b.desc)) return 'Exact duplicate';
+    if (a.amount !== b.amount) return null;
+    if (a.amount >= 500 && dd(a.date, b.date) <= 3 && a.worker && nm(a.worker) === nm(b.worker)) return 'Same amount and name within 3 days';
+    if (a.status === 'Pending' && b.status === 'Pending' && a.worker && nm(a.worker) === nm(b.worker) && dd(a.date, b.date) <= 30) return 'Same due written twice?';
+    return null;
+  };
+  const parent = items.map((_, i) => i);
+  const find = i => parent[i] === i ? i : (parent[i] = find(parent[i]));
+  const why = {};
+  for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+    const r = reason(items[i], items[j]);
+    if (r) { parent[find(i)] = find(j); why[i] = why[j] = r; }
+  }
+  const groups = {};
+  items.forEach((it, i) => { if (why[i]) (groups[find(i)] = groups[find(i)] || []).push(i); });
+  const inDup = new Set();
+  Object.values(groups).forEach(ix => {
+    ix.forEach(i => inDup.add(items[i].id));
+    const t = ix.some(i => why[i] === 'Exact duplicate') ? 'Exact duplicate' : why[ix[0]];
+    add('dup', 'dup', t + ' (' + ix.length + ' entries)', ix.map(i => items[i]));
+  });
+
+  // 2) single-entry doubts
+  const byCat = {};
+  data.forEach(r => (byCat[r.category] = byCat[r.category] || []).push(+r.amount));
+  const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : 0; };
+  items.forEach(it => {
+    if (/^\s*check\b/i.test(it.remarks) && !inDup.has(it.id)) add('check', 'check', 'Marked CHECK: ' + it.remarks.replace(/^\s*check:?\s*/i, '').split('|')[0].trim(), [it]);
+    if (it.date < '2025-02-06' || it.date > today) add('baddate', 'bad', 'Date looks wrong (' + it.date + ')', [it]);
+    if (it.kind === 'expense') {
+      if (it.status === 'Partial' && !(+it.row.paid_amount > 0 && +it.row.paid_amount < it.amount)) add('badpartial', 'bad', 'Partial amount does not make sense', [it]);
+      if (it.status === 'Pending' && dd(it.date, today) > 60) add('olddue', 'due', 'Old due still Pending (' + Math.round(dd(it.date, today)) + ' days) - may already be paid', [it]);
+      const med = median(byCat[it.category] || []);
+      if (it.amount >= 10000 && med > 0 && it.amount >= 10 * med) add('large', 'check', 'Much larger than usual for ' + it.category + ' (typical ' + fmt(med) + ') - typo?', [it]);
+    }
+  });
+  return issues;
+}
+
+function healthItemRow(it) {
+  const tag = it.kind === 'payment' ? '<span class="badge badge-partial" style="margin-right:6px">Payment</span>' : '';
+  const st = it.kind === 'expense' ? ' &middot; ' + esc(it.status) : '';
+  const acts = it.kind === 'expense'
+    ? `<button class="edit-btn" onclick="editEntry('${esc(it.id)}')" title="Edit"><i class="ti ti-pencil"></i></button>
+       ${it.status !== 'Paid' ? `<button class="btn btn-sm" onclick="quickStatusChange('${esc(it.id)}')">Set Paid</button>` : ''}
+       <button class="delete-btn" onclick="deleteEntry('${esc(it.id)}')" title="Delete"><i class="ti ti-trash"></i></button>`
+    : `<button class="delete-btn" onclick="deletePayment('${esc(it.id)}')" title="Delete"><i class="ti ti-trash"></i></button>`;
+  return `<div class="hitem">
+    <div class="hmain">${tag}<b>${esc(it.desc)}</b><div class="hsub">${fmtDate(it.date)} &middot; ${esc(it.worker) || 'no name'} &middot; ${esc(it.category)}${st}${it.remarks ? '<br>' + esc(it.remarks) : ''}</div></div>
+    <div class="mono" style="font-weight:600">${fmt(it.amount)}</div>
+    <div class="action-btns">${acts}</div>
+  </div>`;
+}
+
+function renderHealth() {
+  const all = healthIssues();
+  const open = all.filter(i => !healthOk.has(i.key));
+  const reviewed = all.length - open.length;
+  const cnt = t => open.filter(i => i.type === t).length;
+  document.getElementById('health-stats').innerHTML = `
+    <div class="stat-card"><div class="label"><i class="ti ti-copy"></i> Possible duplicates</div><div class="value">${cnt('dup')}</div><div class="sub-value">groups to review</div></div>
+    <div class="stat-card"><div class="label"><i class="ti ti-alert-triangle"></i> Doubtful</div><div class="value">${open.filter(i => ['check','large','baddate','badpartial'].includes(i.type)).length}</div><div class="sub-value">marked CHECK / large / odd</div></div>
+    <div class="stat-card"><div class="label"><i class="ti ti-clock"></i> Old dues</div><div class="value">${cnt('olddue')}</div><div class="sub-value">Pending over 60 days</div></div>`;
+  const filters = [['all','All'],['dup','Duplicates'],['check','Doubtful'],['olddue','Old dues']];
+  document.getElementById('health-filter').innerHTML = filters.map(([k, l]) => `<button class="filter-btn ${healthFilter === k ? 'active' : ''}" onclick="healthFilter='${k}';renderHealth()">${l}</button>`).join('')
+    + (reviewed ? `<button class="filter-btn" onclick="healthShowReviewed=!healthShowReviewed;renderHealth()">${healthShowReviewed ? 'Hide' : 'Show'} reviewed (${reviewed})</button>` : '');
+  const match = i => healthFilter === 'all' || (healthFilter === 'dup' && i.type === 'dup') || (healthFilter === 'olddue' && i.type === 'olddue') || (healthFilter === 'check' && ['check','large','baddate','badpartial'].includes(i.type));
+  const order = { dup: 0, bad: 1, check: 2, due: 3 };
+  const list = all.filter(i => match(i) && (healthShowReviewed || !healthOk.has(i.key))).sort((a, b) => order[a.level] - order[b.level] || a.items[0].date.localeCompare(b.items[0].date));
+  const chip = { dup: 'Duplicate?', check: 'Check', due: 'Old due', bad: 'Fix' };
+  document.getElementById('health-list').innerHTML = list.length ? list.map(i => `
+    <div class="hcard" style="${healthOk.has(i.key) ? 'opacity:.55' : ''}">
+      <div class="hcard-head"><span class="hchip ${i.level}">${chip[i.level]}</span><span>${esc(i.title)}</span></div>
+      ${i.items.map(healthItemRow).join('')}
+      <div class="hfoot">${healthOk.has(i.key)
+        ? `<button class="btn btn-sm" onclick="healthUnOk('${esc(i.key)}')">Undo</button>`
+        : `<button class="btn btn-sm" onclick="healthMarkOk('${esc(i.key)}')"><i class="ti ti-check"></i> Looks fine, mark OK</button>`}</div>
+    </div>`).join('')
+    : `<div style="text-align:center;padding:40px;color:var(--text3)"><i class="ti ti-circle-check" style="font-size:32px;color:var(--green)"></i><div style="margin-top:8px">Nothing to review. Your data looks healthy.</div></div>`;
+}
+function healthMarkOk(key) { healthOk.add(key); saveHealthOk(); renderPage(currentPage); }
+function healthUnOk(key) { healthOk.delete(key); saveHealthOk(); renderPage(currentPage); }
+
 // ── PAYMENTS PAGE ──
 function renderPayments() {
   const q = document.getElementById('search-pay')?.value?.toLowerCase() || '';
@@ -1829,7 +1960,7 @@ function deletePayment(id) {
   if (!confirm('Delete this payment?')) return;
   payments = payments.filter(p => p.id !== id);
   savePayments();
-  renderPayments();
+  renderPage(currentPage);
   showToast('Payment deleted.');
 }
 
