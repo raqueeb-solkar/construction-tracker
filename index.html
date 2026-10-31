@@ -733,6 +733,10 @@
       <i class="ti ti-dots-circle-horizontal" aria-hidden="true"></i>
       <span>Other Work</span>
     </button>
+    <button class="nav-item" onclick="showPage('payments')" id="nav-payments">
+      <i class="ti ti-cash" aria-hidden="true"></i>
+      <span>Payments</span>
+    </button>
   </div>
   <div style="flex:1"></div>
   <div class="drive-panel">
@@ -759,6 +763,9 @@
     <div class="topbar-title" id="topbar-title">Dashboard <span>Harnai Construction Project</span></div>
     <button class="btn" id="topbar-drive-btn" onclick="driveBackup()" style="display:none;gap:6px">
       <i class="ti ti-cloud-upload" aria-hidden="true"></i> Backup
+    </button>
+    <button class="btn" onclick="openImportModal()" style="gap:6px">
+      <i class="ti ti-file-import" aria-hidden="true"></i> Import
     </button>
     <button class="btn btn-primary" onclick="openModal()">
       <i class="ti ti-plus" aria-hidden="true"></i> Add Entry
@@ -813,6 +820,33 @@
           </tr>
         </thead>
         <tbody id="all-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- PAYMENTS PAGE -->
+  <div class="page" id="page-payments">
+    <div class="stats-grid" id="pay-stats"></div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <h3>Payments <span style="font-weight:400;color:var(--text3);font-size:12px">(against old dues / advances &mdash; not counted as expenses)</span></h3>
+        <div class="search-wrap">
+          <i class="ti ti-search" aria-hidden="true"></i>
+          <input class="search-input" id="search-pay" placeholder="Search..." oninput="renderPayments()">
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Paid to</th>
+            <th>Mode</th>
+            <th style="text-align:right">Amount (&#8377;)</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="pay-tbody"></tbody>
       </table>
     </div>
   </div>
@@ -1038,6 +1072,25 @@
 </div>
 
 <!-- RESTORE MODAL -->
+<div class="modal-overlay" id="import-modal" onclick="if(event.target===this)closeImportModal()">
+  <div class="modal drive-modal">
+    <div class="modal-head">
+      <i class="ti ti-file-import" style="font-size:18px" aria-hidden="true"></i>
+      <h3>Import entries (JSON)</h3>
+      <button class="delete-btn" onclick="closeImportModal()" style="margin-left:auto"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text2)">Paste the JSON you got from Claude. You will see a preview before anything is added. Entries already in the app are skipped.</p>
+      <textarea id="import-text" rows="8" style="width:100%;font-family:'JetBrains Mono',monospace;font-size:12px" placeholder='{"expenses":[...], "payments":[...]}' oninput="previewImport()"></textarea>
+      <div id="import-preview" style="font-size:13px;margin-top:8px;min-height:20px;color:var(--text2)"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end">
+        <button class="btn" onclick="closeImportModal()">Cancel</button>
+        <button class="btn btn-primary" id="import-confirm" onclick="confirmImport()" disabled>Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="restore-modal" onclick="if(event.target===this)closeRestoreModal()">
   <div class="modal drive-modal">
     <div class="modal-head">
@@ -1075,6 +1128,13 @@ function load() {
   if (data.length === 0) seedData();
 }
 function save() { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+
+// Payments = money paid against earlier dues / advances. Kept separate so they never inflate expense totals.
+const PAY_KEY = 'alahmed_construction_payments_v1';
+let payments = [];
+function loadPayments() { try { payments = JSON.parse(localStorage.getItem(PAY_KEY)) || []; } catch { payments = []; } }
+function savePayments() { localStorage.setItem(PAY_KEY, JSON.stringify(payments)); }
+function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function seedData() {
   const today = new Date();
@@ -1148,7 +1208,7 @@ function showPage(name) {
   const titles = {
     dashboard: 'Dashboard', all: 'All Expenses', raghu: 'Raghu Contractor',
     workers: 'Workers', material: 'Materials', masonry: 'Masonry Work',
-    electrical: 'Electrical Work', plumbing: 'Plumbing Work', brickwork: 'Brick Work', other: 'Other Work'
+    electrical: 'Electrical Work', plumbing: 'Plumbing Work', brickwork: 'Brick Work', other: 'Other Work', payments: 'Payments'
   };
   document.getElementById('topbar-title').innerHTML = titles[name] + ' <span>Harnai Construction Project</span>';
   renderPage(name);
@@ -1166,6 +1226,7 @@ function renderPage(name) {
     case 'plumbing': renderCategory('plumbing', 'Plumbing'); break;
     case 'brickwork': renderCategory('brickwork', 'Brick Work'); break;
     case 'other': renderCategory('other', 'Other'); break;
+    case 'payments': renderPayments(); break;
   }
   updateBadges();
 }
@@ -1735,6 +1796,119 @@ function driveSetStatus(msg, ok) {
   el.className = 'drive-status' + (ok ? ' connected' : '');
 }
 
+// ── PAYMENTS PAGE ──
+function renderPayments() {
+  const q = document.getElementById('search-pay')?.value?.toLowerCase() || '';
+  const all = [...payments].sort((a,b) => b.date.localeCompare(a.date));
+  const rows = q ? all.filter(r => (r.desc + ' ' + (r.worker||'')).toLowerCase().includes(q)) : all;
+  const paidTotal = payments.reduce((s,d) => s + (+d.amount), 0);
+  const dues = data.reduce((s,d) => s + getRemaining(d), 0);
+  document.getElementById('pay-stats').innerHTML = `
+    <div class="stat-card"><div class="label"><i class="ti ti-cash"></i> Payments made</div><div class="value">${fmt(paidTotal)}</div><div class="sub-value">${payments.length} entries</div></div>
+    <div class="stat-card"><div class="label"><i class="ti ti-clock"></i> Dues in expenses</div><div class="value">${fmt(dues)}</div><div class="sub-value">Pending / partial</div></div>`;
+  document.getElementById('pay-tbody').innerHTML = rows.length ? rows.map(r => `<tr>
+      <td class="mono">${fmtDate(r.date)}</td>
+      <td>${esc(r.desc)}${r.remarks ? `<div style="font-size:11px;color:var(--text3)">${esc(r.remarks)}</div>` : ''}</td>
+      <td>${esc(r.worker) || '&mdash;'}</td>
+      <td>${payBadge(r.payment)}</td>
+      <td class="mono" style="text-align:right;font-weight:600">${fmt(r.amount)}</td>
+      <td><button class="delete-btn" title="Delete" onclick="deletePayment('${esc(r.id)}')"><i class="ti ti-trash"></i></button></td>
+    </tr>`).join('') : `<tr class="empty-row"><td colspan="6">No payments yet</td></tr>`;
+}
+function deletePayment(id) {
+  if (!confirm('Delete this payment?')) return;
+  payments = payments.filter(p => p.id !== id);
+  savePayments();
+  renderPayments();
+  showToast('Payment deleted.');
+}
+
+// ── IMPORT (paste JSON) ──
+const IMP_CATS = ['Raghu Contractor','Masonry','Electrical','Plumbing','Brick Work','Material','Other'];
+const IMP_PAY = ['Cash','Online','Credit'];
+const IMP_STATUS = ['Paid','Pending','Partial'];
+let importPlan = null;
+
+function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function expKey(e) { return [e.date, norm(e.category), norm(e.worker), norm(e.desc), Number(e.amount)].join('|'); }
+function payKey(p) { return [p.date, norm(p.worker), norm(p.desc), Number(p.amount)].join('|'); }
+
+function openImportModal() {
+  document.getElementById('import-text').value = '';
+  document.getElementById('import-preview').textContent = '';
+  document.getElementById('import-confirm').disabled = true;
+  importPlan = null;
+  document.getElementById('import-modal').classList.add('open');
+}
+function closeImportModal() { document.getElementById('import-modal').classList.remove('open'); }
+
+function previewImport() {
+  const box = document.getElementById('import-preview');
+  const btn = document.getElementById('import-confirm');
+  const raw = document.getElementById('import-text').value.trim();
+  importPlan = null; btn.disabled = true;
+  if (!raw) { box.textContent = ''; return; }
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (e) { box.innerHTML = '<span style="color:var(--red)">Not valid JSON yet. Paste the full text from Claude.</span>'; return; }
+  const exp = Array.isArray(parsed) ? parsed : (parsed.expenses || []);
+  const pay = Array.isArray(parsed) ? [] : (parsed.payments || []);
+  const plan = { newExp: [], newPay: [], dupExp: 0, dupPay: 0, bad: [] };
+  const seenExp = new Set(data.map(expKey)), seenPay = new Set(payments.map(payKey));
+  const validDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d));
+  exp.forEach((e, i) => {
+    const amount = Number(e.amount), paid = e.paid_amount == null ? null : Number(e.paid_amount);
+    let why = '';
+    if (!validDate(e.date)) why = 'bad date';
+    else if (!(amount > 0)) why = 'bad amount';
+    else if (!IMP_CATS.includes(e.category)) why = 'unknown category';
+    else if (!e.desc) why = 'no description';
+    else if (!IMP_PAY.includes(e.payment)) why = 'unknown payment mode';
+    else if (!IMP_STATUS.includes(e.status)) why = 'unknown status';
+    else if (e.status === 'Partial' && !(paid > 0 && paid < amount)) why = 'partial needs 0 < paid < amount';
+    if (why) { plan.bad.push('Expense #' + (i + 1) + ': ' + why); return; }
+    const k = expKey(e);
+    if (seenExp.has(k)) { plan.dupExp++; return; }
+    seenExp.add(k);
+    const paid_amount = e.status === 'Paid' ? amount : (e.status === 'Pending' ? 0 : paid);
+    plan.newExp.push({ id: uid(), date: e.date, category: e.category, worker: e.worker || '', desc: String(e.desc), payment: e.payment, status: e.status, amount, paid_amount, remarks: e.remarks || '' });
+  });
+  pay.forEach((p, i) => {
+    const amount = Number(p.amount);
+    let why = '';
+    if (!validDate(p.date)) why = 'bad date';
+    else if (!(amount > 0)) why = 'bad amount';
+    else if (!p.desc) why = 'no description';
+    else if (!IMP_PAY.includes(p.payment || 'Cash')) why = 'unknown payment mode';
+    if (why) { plan.bad.push('Payment #' + (i + 1) + ': ' + why); return; }
+    const k = payKey(p);
+    if (seenPay.has(k)) { plan.dupPay++; return; }
+    seenPay.add(k);
+    plan.newPay.push({ id: uid(), date: p.date, worker: p.worker || '', desc: String(p.desc), payment: p.payment || 'Cash', amount, remarks: p.remarks || '' });
+  });
+  importPlan = plan;
+  const sumE = plan.newExp.reduce((s, e) => s + e.amount, 0), sumP = plan.newPay.reduce((s, e) => s + e.amount, 0);
+  box.innerHTML = `
+    <table style="width:100%;font-size:13px"><tbody>
+      <tr><td>New expenses</td><td class="mono" style="text-align:right"><b>${plan.newExp.length}</b></td><td class="mono" style="text-align:right">${fmt(sumE)}</td></tr>
+      <tr><td>New payments</td><td class="mono" style="text-align:right"><b>${plan.newPay.length}</b></td><td class="mono" style="text-align:right">${fmt(sumP)}</td></tr>
+      <tr><td>Already in app (skipped)</td><td class="mono" style="text-align:right">${plan.dupExp + plan.dupPay}</td><td></td></tr>
+      <tr><td style="color:${plan.bad.length ? 'var(--red)' : 'inherit'}">Invalid (skipped)</td><td class="mono" style="text-align:right">${plan.bad.length}</td><td></td></tr>
+    </tbody></table>` + (plan.bad.length ? `<div style="font-size:12px;color:var(--red);margin-top:6px">${plan.bad.slice(0, 5).map(esc).join('<br>')}</div>` : '');
+  btn.disabled = plan.newExp.length + plan.newPay.length === 0;
+  btn.textContent = 'Import ' + (plan.newExp.length + plan.newPay.length) + ' new';
+}
+
+function confirmImport() {
+  if (!importPlan) return;
+  data.push(...importPlan.newExp);
+  payments.push(...importPlan.newPay);
+  save(); savePayments();
+  showToast('Imported ' + importPlan.newExp.length + ' expenses, ' + importPlan.newPay.length + ' payments');
+  importPlan = null;
+  closeImportModal();
+  renderPage(currentPage);
+}
+
 // ── BACKUP ──
 async function driveBackup() {
   if (!driveToken) { showToast('Sign in to Google Drive first'); return; }
@@ -1742,7 +1916,7 @@ async function driveBackup() {
   try {
     const folderId = await getOrCreateFolder();
     const fileId = await findBackupFile(folderId);
-    const payload = JSON.stringify({ data, savedAt: new Date().toISOString(), entries: data.length });
+    const payload = JSON.stringify({ data, payments, savedAt: new Date().toISOString(), entries: data.length });
     if (fileId) {
       await updateDriveFile(fileId, payload);
     } else {
@@ -1836,7 +2010,9 @@ async function restoreFromFile(fileId, fileName) {
     const json = await resp.json();
     if (!json.data || !Array.isArray(json.data)) throw new Error('Invalid backup file format');
     data = json.data;
+    payments = Array.isArray(json.payments) ? json.payments : [];
     save();
+    savePayments();
     closeRestoreModal();
     showToast('Restored ' + data.length + ' entries from Drive!');
     renderPage(currentPage);
@@ -1903,6 +2079,7 @@ function checkBackupReminder() {
 
 // INIT
 load();
+loadPayments();
 renderPage('dashboard');
 checkBackupReminder();
 </script>
