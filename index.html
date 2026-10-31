@@ -671,6 +671,12 @@
     .dashboard-body { grid-template-columns: 1fr; }
     .form-row { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
+    .topbar { padding: 0 10px; gap: 6px; }
+    .topbar-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .topbar-title span { display: none; }
+    .topbar .btn { padding: 7px 10px; flex-shrink: 0; }
+    .topbar .btn-label { display: none; }
+    .table-wrap { overflow-x: auto; }
   }
 </style>
 </head>
@@ -737,6 +743,10 @@
       <i class="ti ti-cash" aria-hidden="true"></i>
       <span>Payments</span>
     </button>
+    <button class="nav-item" onclick="openImportModal()" id="nav-import">
+      <i class="ti ti-file-import" aria-hidden="true"></i>
+      <span>Import data</span>
+    </button>
   </div>
   <div style="flex:1"></div>
   <div class="drive-panel">
@@ -762,13 +772,13 @@
   <div class="topbar">
     <div class="topbar-title" id="topbar-title">Dashboard <span>Harnai Construction Project</span></div>
     <button class="btn" id="topbar-drive-btn" onclick="driveBackup()" style="display:none;gap:6px">
-      <i class="ti ti-cloud-upload" aria-hidden="true"></i> Backup
+      <i class="ti ti-cloud-upload" aria-hidden="true"></i> <span class="btn-label">Backup</span>
     </button>
     <button class="btn" onclick="openImportModal()" style="gap:6px">
-      <i class="ti ti-file-import" aria-hidden="true"></i> Import
+      <i class="ti ti-file-import" aria-hidden="true"></i> <span class="btn-label">Import</span>
     </button>
     <button class="btn btn-primary" onclick="openModal()">
-      <i class="ti ti-plus" aria-hidden="true"></i> Add Entry
+      <i class="ti ti-plus" aria-hidden="true"></i> <span class="btn-label">Add Entry</span>
     </button>
   </div>
 
